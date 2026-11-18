@@ -14,7 +14,7 @@ REM Activate the environment
 call "%VENV_DIR%\Scripts\activate.bat"
 
 REM Use "python" (not python3) on Windows inside a venv
-python lumens_run.py
+python lumen_price.py
 
 REM Capture exit code before deactivating
 set EXIT_CODE=%errorlevel%
