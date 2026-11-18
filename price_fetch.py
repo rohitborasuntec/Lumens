@@ -2,26 +2,28 @@
 """
 price_fetch.py — Find competitor prices for Lumens products via Google Shopping.
 
-Input: IMAP DETAILS.xlsx only.
-  Sheet1 col B = brand best-seller link (Lumens), col C = 53 seller sites.
+Input:
+  File 1.csv         -> product name, Lumens URL, image, Lumens price, rank, MFR ID
+  IMAP DETAILS.xlsx  -> Sheet1 col C = seller sites
+  The Lumens website is NOT opened; all Lumens data comes from the file.
 
 Flow:
-  0. Collect the brand's best-seller products from its Lumens link (rank = position).
-  1. Open each Lumens product page -> Lumens price and MFR ID.
-  2. Google Shopping search "<product name> <MFR ID>" (US results; run with a US VPN).
-     Also a normal Google web search as a second source of seller links.
+  1. Take the top N products by rank from the file.
+  2. Google search "<product name> <MFR ID>" (US results; run with a US VPN),
+     then click the Shopping tab. Both pages give seller links.
   3. Keep only links whose domain is in the Seller Sites list (IMAP DETAILS.xlsx, Sheet1 col C).
-  4. Open each seller page, read title / price / image from its product data
+  4. If the seller link has another finish of the product (303005-1009), swap in our
+     MFR ID (303005-1007). Open each seller page, read title / price / image from its product data
      (JSON-LD, meta tags, itemprop), and verify it is the same product using
-     MFR ID, name similarity and image similarity (img_compare.py).
-  5. Write one row per matched seller to output/results.xlsx (Sheet2 layout).
+     MFR ID (in title = MATCH), name similarity and image similarity (img_compare.py).
+  5. Write one row per matched seller to output/results_<time>.xlsx (Sheet2 layout).
 
 Google captchas: the browser uses a saved profile (.browser_profile/). If Google
 shows a captcha, solve it in the Chrome window — the script waits and continues.
 
 Usage:
-  .venv/bin/python price_fetch.py                 # Hubbardton Forge (default brand)
-  .venv/bin/python price_fetch.py --brand all     # every brand in Sheet1
+  .venv/bin/python price_fetch.py                 # File 1.csv, top 10
+  .venv/bin/python price_fetch.py --input "File 1.csv" --top 10
   .venv/bin/python price_fetch.py --limit 5       # first 5 products (test run)
   .venv/bin/python price_fetch.py --start 20 --limit 10
   .venv/bin/python price_fetch.py --fresh         # ignore checkpoint, start over
@@ -45,17 +47,16 @@ from pathlib import Path
 import openpyxl
 import requests
 from PIL import Image
-from playwright.async_api import async_playwright, TimeoutError as PWTimeout
+from playwright.async_api import async_playwright
 from rapidfuzz import fuzz
 
 import img_compare as ic
 
 ROOT = Path(__file__).resolve().parent
-BRANDS_CSV = ROOT / "brands_products.csv"     # product list built from IMAP DETAILS.xlsx
 SELLERS_XLSX = ROOT / "IMAP DETAILS.xlsx"
 OUT_DIR = ROOT / "output"
 PROFILE_DIR = ROOT / ".browser_profile"
-CHECKPOINT = OUT_DIR / "checkpoint.jsonl"
+CHECKPOINT = OUT_DIR / "checkpoint.jsonl"     # set per input file in main()
 
 GOOGLE_DELAY = (8, 15)        # seconds between Google searches (random)
 SELLER_DELAY = (2, 4)         # seconds between seller page visits
@@ -113,30 +114,23 @@ def fix_url(u: str) -> str:
     return re.sub(r"(?<!:)//+", "/", u)
 
 
-def load_products(path: Path | None = None) -> list[dict]:
-    """Products from an input CSV (e.g. "File 1.csv"), or by default the list
-    collected from the brand best-seller links in IMAP DETAILS.xlsx."""
+def load_products(path: Path) -> list[dict]:
+    """Products from the input CSV (e.g. "File 1.csv")."""
     rows, seen = [], set()
-    if path is not None:
-        files = [path]
-    else:
-        files = [BRANDS_CSV] if BRANDS_CSV.exists() else []
-    for path in files:
-        with open(path, newline="", encoding="utf-8-sig") as f:
-            for r in csv.DictReader(f):
-                url = fix_url(r.get("Lumnes Product Url"))
-                if not url or url in seen:
-                    continue
-                seen.add(url)
-                rows.append({
-                    "name": (r.get("Lumnes Product Name") or "").strip(),
-                    "url": url,
-                    "image": fix_url(r.get("Lumnes Product Image Url")),
-                    "price": parse_price(r.get("Lumens Product Price")),
-                    "rank": (r.get("Lumens BSR rank") or "").strip(),
-                    "mfr": (r.get("MFR ID") or "").strip(),
-                    "domain": (r.get("Domain") or "").strip(),
-                })
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        for r in csv.DictReader(f):
+            url = fix_url(r.get("Lumnes Product Url"))
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            rows.append({
+                "name": (r.get("Lumnes Product Name") or "").strip(),
+                "url": url,
+                "image": fix_url(r.get("Lumnes Product Image Url")),
+                "price": parse_price(r.get("Lumens Product Price")),
+                "rank": (r.get("Lumens BSR rank") or "").strip(),
+                "mfr": (r.get("MFR ID") or "").strip(),
+            })
     return rows
 
 
@@ -316,9 +310,19 @@ def parse_product_page(raw: dict, mfr: str) -> dict:
     image = image or meta.get("og:image") or iprop.get("image")
     ids += [str(iprop[k]) for k in ("sku", "mpn") if iprop.get(k)]
 
-    mpn = (chosen or {}).get("mpn") or iprop.get("mpn") or ""
     return {"title": (title or "").strip(), "price": price, "image": image,
-            "ids": ids, "mpn": str(mpn).strip(), "text": raw.get("text", "")}
+            "ids": ids, "text": raw.get("text", "")}
+
+
+def fix_variant_url(url: str, mfr: str) -> str:
+    """URL has another finish of the same product (e.g. utm_content=303005-1009)?
+    Swap in our MFR ID (303005-1007): base number + '-' + digits -> mfr."""
+    if not mfr or "-" not in mfr:
+        return url
+    base = mfr.split("-")[0]
+    if len(base) < 5:
+        return url
+    return re.sub(rf"(?<![0-9A-Za-z]){re.escape(base)}-\d+(?!\d)", mfr, url)
 
 
 def mfr_match(mfr: str, page: dict) -> str:
@@ -434,15 +438,51 @@ COLLECT_CARDS_JS = r"""
 """
 
 
+async def open_shopping_tab(page) -> bool:
+    """Click the 'Shopping' tab on a Google results page, like a person would."""
+    await page.wait_for_timeout(random.randint(1000, 2000))
+    for sel in ['a[href*="udm=28"]', 'a[href*="tbm=shop"]',
+                'a:has-text("Shopping")', 'div[role="listitem"] a:has-text("Shopping")']:
+        loc = page.locator(sel).first
+        try:
+            if await loc.count() and await loc.is_visible():
+                await loc.click()
+                await page.wait_for_load_state("domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(1500)
+                if "udm=28" in page.url or "tbm=shop" in page.url:
+                    return True
+        except Exception:
+            continue
+    # tab may be under "More"
+    try:
+        more = page.locator('div[role="navigation"] :text-is("More"), [aria-label="More filters"]').first
+        if await more.count():
+            await more.click()
+            await page.wait_for_timeout(1000)
+            loc = page.locator('a:has-text("Shopping")').first
+            if await loc.count():
+                await loc.click()
+                await page.wait_for_load_state("domcontentloaded", timeout=30000)
+                return "udm=28" in page.url or "tbm=shop" in page.url
+    except Exception:
+        pass
+    return False
+
+
 async def google_search(page, query: str, shopping: bool, sellers: dict,
                         debug_dir: Path | None, tag: str) -> list[dict]:
     params = {"q": query, "gl": "us", "hl": "en", "pws": "0"}
+    web_url = "https://www.google.com/search?" + urllib.parse.urlencode(params)
+    if not shopping or "google.com/search" not in page.url:
+        await page.goto(web_url, wait_until="domcontentloaded", timeout=45000)
+        await wait_captcha(page, debug_dir)
+        await accept_consent(page)
     if shopping:
-        params["udm"] = "28"
-    url = "https://www.google.com/search?" + urllib.parse.urlencode(params)
-    await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-    await wait_captcha(page, debug_dir)
-    await accept_consent(page)
+        if not await open_shopping_tab(page):
+            log("   ! Shopping tab not found, opening Shopping URL directly")
+            await page.goto(web_url + "&udm=28", wait_until="domcontentloaded", timeout=45000)
+        await wait_captcha(page, debug_dir)
+        log(f"   Shopping page: {'yes' if 'udm=28' in page.url or 'tbm=shop' in page.url else 'NO'}")
     await page.wait_for_timeout(random.randint(2500, 4000))
     # scroll to trigger lazy content
     for _ in range(3):
@@ -546,7 +586,7 @@ async def resolve_redirect(ctx, url: str) -> str | None:
 async def scrape_page(ctx, url: str, mfr: str) -> dict | None:
     p = await ctx.new_page()
     try:
-        resp = await p.goto(url, wait_until="domcontentloaded", timeout=45000)
+        await p.goto(url, wait_until="domcontentloaded", timeout=45000)
         await p.wait_for_timeout(random.randint(2500, 4000))
         # Cloudflare / PerimeterX bot wall: give it a little time to clear by itself
         blocked = False
@@ -562,7 +602,6 @@ async def scrape_page(ctx, url: str, mfr: str) -> dict | None:
         raw = await p.evaluate(EXTRACT_JS)
         data = parse_product_page(raw, mfr)
         data["final_url"] = p.url
-        data["status"] = resp.status if resp else None
         return data
     except Exception as e:
         log(f"   ! failed {url[:90]}: {type(e).__name__}")
@@ -586,7 +625,7 @@ def load_checkpoint() -> dict[str, list[dict]]:
         for line in CHECKPOINT.read_text().splitlines():
             try:
                 d = json.loads(line)
-                done[d["key"].split("|")[0]] = d["rows"]   # key = Lumens URL
+                done[d["key"]] = d["rows"]   # key = Lumens URL
             except Exception:
                 pass
     return done
@@ -655,37 +694,30 @@ def write_excel(all_rows: list[dict], path: Path):
 async def process_product(ctx, gpage, prod: dict, sellers: dict, debug_dir) -> list[dict]:
     rows = []
 
-    # 1) Lumens page: price, and MFR ID / image / name when the input list lacks them
+    # 1) Lumens data comes from the input file only (Lumens site is not opened)
     lumens_price = prod["price"]
-    lumens = await scrape_page(ctx, prod["url"], prod["mfr"])
-    if lumens and not lumens.get("blocked"):
-        lumens_price = lumens_price or lumens["price"]
-        if not prod["mfr"] and lumens.get("mpn"):
-            prod["mfr"] = lumens["mpn"]
-        if not prod["image"] and lumens.get("image"):
-            prod["image"] = lumens["image"]
-        if not prod["name"] and lumens.get("title"):
-            prod["name"] = lumens["title"]
     base = {"Product Name": prod["name"], "Url": prod["url"], "MFR ID": prod["mfr"],
             "Lumens rank": prod["rank"], "Lumens Price": lumens_price}
     log(f"   Lumens price: {lumens_price}   MFR ID: {prod['mfr'] or '-'}")
 
-    # 2) Google Shopping + web search
+    # 2) Google web search, then the Shopping tab
     query = f"{prod['name']} {prod['mfr']}".strip()
     tag = alnum(prod["mfr"] or prod["name"])[:30]
     candidates = []
-    for shopping in (True, False):
+    for shopping in (False, True):     # web search, then click the Shopping tab
         try:
             candidates += await google_search(gpage, query, shopping, sellers, debug_dir, tag)
         except RuntimeError:
             raise
         except Exception as e:
             log(f"   ! google {'shopping' if shopping else 'web'} failed: {type(e).__name__}: {e}")
-        await gpage.wait_for_timeout(random.randint(*GOOGLE_DELAY) * 1000)
+        if not shopping:
+            await gpage.wait_for_timeout(random.randint(2000, 4000))
+    await gpage.wait_for_timeout(random.randint(*GOOGLE_DELAY) * 1000)
 
     # dedupe by URL, prefer shopping source
     uniq = {}
-    for c in candidates:
+    for c in sorted(candidates, key=lambda c: "shop" not in c["source"].lower()):
         uniq.setdefault(c["url"], c)
     candidates = list(uniq.values())[:MAX_SELLER_PAGES]
     log(f"   {len(candidates)} seller link(s): {sorted({c['seller'] for c in candidates})}")
@@ -693,6 +725,10 @@ async def process_product(ctx, gpage, prod: dict, sellers: dict, debug_dir) -> l
     # 3) Visit each seller page and verify
     best_per_seller: dict[str, dict] = {}
     for c in candidates:
+        fixed = fix_variant_url(c["url"], prod["mfr"])
+        if fixed != c["url"]:
+            log(f"   variant link fixed: {c['url']} -> {fixed}")
+            c["url"] = fixed
         page = None
         if _blocked_hosts.get(c["seller"], 0) < 2:      # stop trying sites that keep blocking us
             page = await scrape_page(ctx, c["url"], prod["mfr"])
@@ -740,24 +776,6 @@ async def process_product(ctx, gpage, prod: dict, sellers: dict, debug_dir) -> l
     return rows
 
 
-async def products_from_imap(brand_arg: str) -> list[dict]:
-    """Product list from the brand best-seller link(s) in IMAP DETAILS.xlsx;
-    collected from Lumens first if it isn't there yet."""
-    import collect_products as cp
-    brand = brand_arg.lower()
-    wanted = [b for b in cp.load_brands() if brand == "all" or brand in (b[0].lower(), cp.brand_slug(b[1]))]
-    if not wanted:
-        log(f"Brand '{brand_arg}' not found in IMAP DETAILS.xlsx Sheet1")
-        sys.exit(1)
-    have = {p["domain"] for p in load_products()}
-    missing = [b for b in wanted if cp.brand_slug(b[1]) not in have]
-    if missing:
-        log(f"Collecting best-seller list from Lumens for: {', '.join(b[0] for b in missing)}")
-        await cp.collect_and_save(missing)
-    slugs = {cp.brand_slug(b[1]) for b in wanted}
-    return [p for p in load_products() if p["domain"] in slugs]
-
-
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", type=int, default=0, help="row index to start from (0-based)")
@@ -765,11 +783,9 @@ async def main():
     ap.add_argument("--fresh", action="store_true", help="ignore checkpoint")
     ap.add_argument("--debug", action="store_true", help="save Google pages to output/debug/")
     ap.add_argument("--skip-ip-check", action="store_true")
-    ap.add_argument("--brand", default="hubbardton-forge",
-                    help="brand from IMAP DETAILS.xlsx Sheet1 (url slug, e.g. hubbardton-forge), or 'all'")
-    ap.add_argument("--top", type=int, default=10, help="only the top N best sellers per brand (0 = all)")
-    ap.add_argument("--input", help='product CSV to use instead of the IMAP brand link, e.g. "File 1.csv" '
-                                    "(MFR ID and Lumens price are taken from the file)")
+    ap.add_argument("--top", type=int, default=10, help="only the top N products by rank (0 = all)")
+    ap.add_argument("--input", default="File 1.csv",
+                    help="product CSV (name, URL, image, Lumens price, rank, MFR ID)")
     args = ap.parse_args()
 
     OUT_DIR.mkdir(exist_ok=True)
@@ -788,22 +804,21 @@ async def main():
         except requests.RequestException:
             log("Could not check IP country; continuing.")
 
-    if args.input:
-        in_path = Path(args.input)
-        if not in_path.is_absolute():
-            in_path = ROOT / in_path
-        products = load_products(in_path)
-        log(f"Input: {in_path.name}")
-    else:
-        products = await products_from_imap(args.brand)
+    in_path = Path(args.input)
+    if not in_path.is_absolute():
+        in_path = ROOT / in_path
+    if not in_path.exists():
+        log(f"Input file not found: {in_path}")
+        sys.exit(1)
+    products = load_products(in_path)
+    log(f"Input: {in_path.name}")
     if args.top:
         products = [p for p in products if str(p["rank"]).isdigit() and int(p["rank"]) <= args.top]
     products.sort(key=lambda p: int(p["rank"]) if str(p["rank"]).isdigit() else 10**9)
 
     # separate progress file per input, so runs on different lists don't mix
     global CHECKPOINT
-    if args.input:
-        CHECKPOINT = OUT_DIR / f"checkpoint_{alnum(in_path.stem)}.jsonl"
+    CHECKPOINT = OUT_DIR / f"checkpoint_{alnum(in_path.stem)}.jsonl"
     sellers = load_sellers()
     log(f"{len(products)} products, {len(sellers)} seller sites")
     products = products[args.start:]
