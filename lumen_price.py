@@ -2,14 +2,13 @@ import pandas as pd
 from curl_cffi import requests
 import random, os, re
 import time, scrapy, json, gc
-import undetected_chromedriver as uc
 from urllib.parse import quote, unquote
 from src.logging import logger
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
-
+from src.automation.driver import Browser
 
 browsers = [
     "chrome120", "chrome123", "chrome124", "chrome131", "chrome133a",
@@ -43,9 +42,10 @@ class Lumens:
                            for i, r in enumerate(self.records)
                            if r.get("MFR ID")}
 
-        self.progress = self._load_progress()   # <-- tracker
+        self.progress = self._load_progress()
 
-        self.driver = self.open_chrome()
+        self.browser = Browser()
+        self.driver, _ = self.browser.launch("Chrome")
 
     # ------------------------------------------------------------------ #
     #  Single-JSON product store
@@ -141,44 +141,6 @@ class Lumens:
             return None
 
     # ------------------------------------------------------------------ #
-    def open_chrome(self):
-        options = uc.ChromeOptions()
-        options.page_load_strategy = "eager"
-        options.add_argument("--disable-gpu")
-        options.add_argument("--no-first-run")
-        options.add_argument("--no-default-browser-check")
-        options.add_argument("--disable-popup-blocking")
-        options.add_argument("--blink-settings=imagesEnabled=false")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-extensions")
-        options.add_argument("--disable-background-networking")
-        options.add_argument("--disable-sync")
-        options.add_argument("--metrics-recording-only")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--memory-pressure-off")
-        options.add_argument("--js-flags=--max-old-space-size=2048")
-        options.add_argument("--disk-cache-size=52428800")
-
-        driver = uc.Chrome(version_main=152, options=options)
-        driver.set_page_load_timeout(30)
-        driver.set_script_timeout(15)
-        return driver
-
-    def close_chrome(self):
-        try:
-            self.driver.quit()
-        except Exception:
-            pass
-        try:
-            import subprocess, sys
-            if sys.platform.startswith("win"):
-                subprocess.run(
-                    ["taskkill", "/F", "/IM", "chromedriver.exe"],
-                    capture_output=True,
-                )
-        except Exception:
-            pass
-
     def _driver_alive(self):
         try:
             _ = self.driver.current_url
@@ -188,12 +150,9 @@ class Lumens:
 
     def restart_driver(self):
         logger.info("[driver] restarting…")
-        try:
-            self.driver.quit()
-        except Exception:
-            pass
+        self.browser.quit("Chrome")
         gc.collect()
-        self.driver = self.open_chrome()
+        self.driver, _ = self.browser.launch("Chrome")
 
     # ------------------------------------------------------------------ #
     def safe_get(self, url, attempts=2):
@@ -535,4 +494,4 @@ if __name__ == "__main__":
             lumen._flush_progress()
         except Exception:
             pass
-        lumen.close_chrome()
+        lumen.browser.quit("Chrome")

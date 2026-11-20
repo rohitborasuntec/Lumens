@@ -1,25 +1,19 @@
 @echo off
 setlocal
 
-set VENV_DIR=myenv
+set "SCRIPT_DIR=%~dp0"
+set "VENV_PYTHON=%SCRIPT_DIR%myenv\Scripts\python.exe"
 
-REM Check the venv exists
-if not exist "%VENV_DIR%\Scripts\activate.bat" (
-    echo Virtual environment "%VENV_DIR%" not found.
-    echo Run setup first, or create it with: python -m venv %VENV_DIR%
+REM The setup script creates this environment once; launchers never recreate it.
+if not exist "%VENV_PYTHON%" (
+    echo Virtual environment "myenv" not found.
+    echo Run "Lumens Project.bat" first.
     exit /b 1
 )
 
-REM Activate the environment
-call "%VENV_DIR%\Scripts\activate.bat"
-
-REM Use "python" (not python3) on Windows inside a venv
-python lumen_price.py
-
-REM Capture exit code before deactivating
+pushd "%SCRIPT_DIR%"
+"%VENV_PYTHON%" lumen_price.py
 set EXIT_CODE=%errorlevel%
-
-REM Deactivate the environment
-call deactivate
+popd
 
 endlocal & exit /b %EXIT_CODE%
