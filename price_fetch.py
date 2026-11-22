@@ -56,7 +56,8 @@ ROOT = Path(__file__).resolve().parent
 SELLERS_XLSX = ROOT / "IMAP DETAILS.xlsx"
 OUT_DIR = ROOT / "output"
 PROFILE_DIR = ROOT / ".browser_profile"
-CHECKPOINT = OUT_DIR / "checkpoint.jsonl"     # set per input file in main()
+CHECKPOINT = OUT_DIR / "price_fetch_progress.jsonl"  # set per input file in main()
+LEGACY_CHECKPOINT: Path | None = None
 
 GOOGLE_DELAY = (8, 15)        # seconds between Google searches (random)
 SELLER_DELAY = (2, 4)         # seconds between seller page visits
@@ -621,8 +622,9 @@ def _int(v):
 
 def load_checkpoint() -> dict[str, list[dict]]:
     done = {}
-    if CHECKPOINT.exists():
-        for line in CHECKPOINT.read_text().splitlines():
+    sources = [p for p in (LEGACY_CHECKPOINT, CHECKPOINT) if p and p.exists()]
+    for source in sources:
+        for line in source.read_text(encoding="utf-8").splitlines():
             try:
                 d = json.loads(line)
                 done[d["key"]] = d["rows"]   # key = Lumens URL
@@ -816,18 +818,27 @@ async def main():
         products = [p for p in products if str(p["rank"]).isdigit() and int(p["rank"]) <= args.top]
     products.sort(key=lambda p: int(p["rank"]) if str(p["rank"]).isdigit() else 10**9)
 
-    # separate progress file per input, so runs on different lists don't mix
-    global CHECKPOINT
-    CHECKPOINT = OUT_DIR / f"checkpoint_{alnum(in_path.stem)}.jsonl"
+    # Keep this tracker separate from lumen_price.py's progress.json, and
+    # separate runs for different input files. Read the old checkpoint name
+    # once for backwards-compatible resume.
+    global CHECKPOINT, LEGACY_CHECKPOINT
+    input_tag = alnum(in_path.stem)
+    CHECKPOINT = OUT_DIR / f"price_fetch_progress_{input_tag}.jsonl"
+    LEGACY_CHECKPOINT = OUT_DIR / f"checkpoint_{input_tag}.jsonl"
     sellers = load_sellers()
     log(f"{len(products)} products, {len(sellers)} seller sites")
     products = products[args.start:]
     if args.limit:
         products = products[:args.limit]
 
-    if args.fresh and CHECKPOINT.exists():
-        CHECKPOINT.unlink()
+    if args.fresh:
+        for progress_file in (CHECKPOINT, LEGACY_CHECKPOINT):
+            if progress_file and progress_file.exists():
+                progress_file.unlink()
     done = load_checkpoint()
+    total = len(products)
+    completed = sum(1 for prod in products if prod["url"] in done)
+    log(f"Progress tracker: {CHECKPOINT.name} ({completed}/{total} products complete)")
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
     out_path = OUT_DIR / f"results_{stamp}.xlsx"
@@ -847,8 +858,10 @@ async def main():
                 log(f"[{i + 1}] {prod['name']} ({prod['mfr']})")
                 rows = await process_product(ctx, gpage, prod, sellers, debug_dir)
                 done[key] = rows
-                with open(CHECKPOINT, "a") as f:
+                with open(CHECKPOINT, "a", encoding="utf-8") as f:
                     f.write(json.dumps({"key": key, "rows": rows}) + "\n")
+                completed += 1
+                log(f"Progress saved: {completed}/{total} products complete")
                 write_excel([r for v in done.values() for r in v], out_path)
         except (KeyboardInterrupt, RuntimeError) as e:
             log(f"Stopped: {e or 'interrupted'} — progress saved, re-run to resume.")

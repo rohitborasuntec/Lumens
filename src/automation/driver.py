@@ -44,7 +44,6 @@ import time
 from functools import lru_cache
 from pathlib import Path
 
-from httpx import options
 import undetected_chromedriver as uc
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options as ChromeOptions
@@ -211,7 +210,7 @@ class Browser:
         user_data_dir: str | None = None,
         use_undetected_firefox: bool = True,
         firefox_install_dir: str | None = None,
-        post_launch_delay: tuple[float, float] = (0.1, 0.3),
+        post_launch_delay: tuple[float, float] = (0,0),
         done_browser: list[str] | None = None,
     ):
         if done_browser is None:
@@ -294,10 +293,10 @@ class Browser:
         if self.user_agent:
             options.add_argument(f"--user-agent={self.user_agent}")
 
-        if browser.lower() == "edge":
-            options.add_argument("--inprivate")
-        else:
-            options.add_argument("--incognito")
+        # if browser.lower() == "edge":
+        #     options.add_argument("--inprivate")
+        # else:
+        #     options.add_argument("--incognito")
         options.add_argument("--disable-session-crashed-bubble")
         options.add_argument("--disable-features=InfiniteSessionRestore")
 
@@ -320,9 +319,9 @@ class Browser:
             driver.set_page_load_timeout(15)
         except Exception as exc:
             logger.warning(f"Could not set page load timeout: {exc}")
-        lo, hi = self.post_launch_delay
-        if hi > 0:
-            time.sleep(random.uniform(lo, hi))
+        # lo, hi = self.post_launch_delay
+        # if hi > 0:
+            # time.sleep(random.uniform(lo, hi))
 
     @staticmethod
     def _kill_by_name(image_name: str) -> None:
