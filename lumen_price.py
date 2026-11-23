@@ -25,6 +25,7 @@ PROGRESS_FILE     = "progress.json"          # <-- new tracker
 
 FLUSH_EVERY = 25
 RESTART_EVERY_LINKS = 5
+MAX_PRODUCTS_PER_LINK = 96
 
 
 class Lumens:
@@ -111,6 +112,14 @@ class Lumens:
     def _get_domain_progress(self, domain):
         return self.progress.get(domain)
 
+    def _mark_product_limit_reached(self, state, domain):
+        state["status"] = "completed"
+        state["cumulative"] = MAX_PRODUCTS_PER_LINK
+        state["next_rank"] = MAX_PRODUCTS_PER_LINK + 1
+        state["pending_products"] = []
+        self._flush_progress()
+        logger.info(f"[{domain}] product limit reached ({MAX_PRODUCTS_PER_LINK}) — completed")
+
     def _init_domain_progress(self, domain):
         self.progress[domain] = {
             "status":            "in_progress",
@@ -122,7 +131,7 @@ class Lumens:
         self._flush_progress()
 
     # ------------------------------------------------------------------ #
-    def wait_for_element(self, locator, timeout=10, condition="visible",
+    def wait_for_element(self, locator, timeout=30, condition="visible",
                          poll=0.5, raise_on_timeout=False):
         conditions = {
             "presence":  EC.presence_of_element_located,
@@ -398,12 +407,19 @@ class Lumens:
         cumulative  = state["cumulative"]
         next_rank   = state["next_rank"]
 
+        if next_rank > MAX_PRODUCTS_PER_LINK:
+            self._mark_product_limit_reached(state, domain)
+            return
+
         # ---- First: drain any pending products left from a crash ----- #
         if state.get("pending_products"):
             logger.info(f"[{domain}] resuming page {page_number} "
                   f"with {len(state['pending_products'])} pending product(s)")
-            pending = list(state["pending_products"])
-            for product in pending:
+            slots_remaining = MAX_PRODUCTS_PER_LINK - next_rank + 1
+            pending = list(state["pending_products"])[:slots_remaining]
+            state["pending_products"] = pending
+            self._flush_progress()
+            for product in list(pending):
                 ok = self._process_one_product(product, link, next_rank)
                 if ok:
                     # remove from pending, bump rank
@@ -414,17 +430,25 @@ class Lumens:
                 else:
                     # keep it pending; will retry on next run
                     logger.info(f"[{domain}] product kept pending: {product.get('url')}")
+            if next_rank > MAX_PRODUCTS_PER_LINK:
+                self._mark_product_limit_reached(state, domain)
+                return
+            if state["pending_products"]:
+                logger.info(f"[{domain}] page {page_number} still has "
+                            f"{len(state['pending_products'])} pending product(s) — "
+                            "will retry next run")
+                return
             # after successful drain, page is complete
-            if not state["pending_products"]:
-                cumulative += 0  # rank already accounted for
-                page_number += 1
-                state["page"]      = page_number
-                state["cumulative"] = cumulative
-                state["next_rank"]  = next_rank
-                self._flush_progress()
-                logger.info(f"[{domain}] page {page_number - 1} drained → moving to page {page_number}")
+            cumulative += 0  # rank already accounted for
+            page_number += 1
+            state["page"]      = page_number
+            state["cumulative"] = cumulative
+            state["next_rank"]  = next_rank
+            self._flush_progress()
+            logger.info(f"[{domain}] page {page_number - 1} drained → moving to page {page_number}")
 
-        # ---- Now iterate over subsequent pages ----------------------- #
+        # ---- Continue until the API returns an empty page or the 96-item
+        #      per-link cap is reached. -------------------------------- #
         while True:
             products = self._fetch_page_products(link, folder, page_number)
 
@@ -441,6 +465,9 @@ class Lumens:
                 self._flush_progress()
                 return
 
+            slots_remaining = MAX_PRODUCTS_PER_LINK - next_rank + 1
+            products = products[:slots_remaining]
+
             # register products as pending BEFORE processing
             state["pending_products"] = list(products)
             state["next_rank"] = next_rank
@@ -455,6 +482,10 @@ class Lumens:
                     self._flush_progress()
                 else:
                     logger.info(f"[{domain}] product kept pending: {product.get('url')}")
+
+            if next_rank > MAX_PRODUCTS_PER_LINK:
+                self._mark_product_limit_reached(state, domain)
+                return
 
             # only advance page if ALL products of this page were processed
             if state["pending_products"]:
