@@ -176,8 +176,16 @@ def unwrap_google(href: str) -> str | None:
 _img_cache: dict[str, Image.Image | None] = {}
 
 
-def get_image(url: str) -> Image.Image | None:
-    if not url:
+def get_image(url: str | list | dict | None) -> Image.Image | None:
+    # Product image fields can be arrays or ImageObjects in JSON-LD.
+    while isinstance(url, list):
+        url = next((item for item in url if item), None)
+    if isinstance(url, dict):
+        url = url.get("url") or url.get("contentUrl")
+    if not isinstance(url, str) or not url.strip():
+        return None
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
         return None
     if url in _img_cache:
         return _img_cache[url]
