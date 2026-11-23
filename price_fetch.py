@@ -786,7 +786,7 @@ async def main():
     ap.add_argument("--debug", action="store_true", help="save Google pages to output/debug/")
     ap.add_argument("--skip-ip-check", action="store_true")
     ap.add_argument("--top", type=int, default=10, help="only the top N products by rank (0 = all)")
-    ap.add_argument("--input", default="File 1.csv",
+    ap.add_argument("--input", default="File.csv",
                     help="product CSV (name, URL, image, Lumens price, rank, MFR ID)")
     args = ap.parse_args()
 
