@@ -58,11 +58,11 @@ def build_csv(input_dir: str, output_file: str):
     df = df[COLUMNS]
 
     # dedupe by MFR ID, prefer rows with a price
-    df["_has_price"] = df["Lumens Product Price"].notna() & \
-                       (df["Lumens Product Price"].astype("string") != "")
-    df = df.sort_values("_has_price", ascending=False)
-    df = df.drop_duplicates("MFR ID", keep="first").drop(columns="_has_price")
-
+    # df["_has_price"] = df["Lumens Product Price"].notna() & \
+    #                    (df["Lumens Product Price"].astype("string") != "")
+    # df = df.sort_values("_has_price", ascending=False)
+    # df = df.drop_duplicates("MFR ID", keep="first").drop(columns="_has_price")
+    df["Lumens Product Price"] = df["Lumens Product Price"].str.replace(",","")
     df.to_csv(output_file, index=False)
     print(f"Wrote {len(df)} rows to {output_file}")
 
