@@ -316,7 +316,7 @@ class Browser:
             except Exception:
                 pass
         try:
-            driver.set_page_load_timeout(15)
+            driver.set_page_load_timeout(60)
         except Exception as exc:
             logger.warning(f"Could not set page load timeout: {exc}")
         # lo, hi = self.post_launch_delay
