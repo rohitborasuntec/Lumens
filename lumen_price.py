@@ -504,7 +504,7 @@ class Lumens:
 
     # ------------------------------------------------------------------ #
     def parse(self):
-        for i, link in enumerate(self.bsr_links[1:]):
+        for i, link in enumerate(self.bsr_links):
             self.parse_page(link)
             if i and i % RESTART_EVERY_LINKS == 0:
                 self.restart_driver()
