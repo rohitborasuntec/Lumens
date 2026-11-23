@@ -9,6 +9,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
 from src.automation.driver import Browser
+import json_to_csv 
 
 browsers = [
     "chrome120", "chrome123", "chrome124", "chrome131", "chrome133a",
@@ -340,7 +341,7 @@ class Lumens:
             "Lumnes Product Name":      product.get("name"),
             "Lumnes Product Url":       lumens_url,
             "Lumnes Product Image Url": product.get("image"),
-            "Lumens Product Price":     price,
+            "Lumens Product Price":     price.replace(",",""),
             "Lumens BSR rank":          rank,
             "MFR ID":                   mfr_id,
             "Domain":                   link.split("com/")[-1].split("/")[0],
@@ -503,7 +504,7 @@ class Lumens:
 
     # ------------------------------------------------------------------ #
     def parse(self):
-        for i, link in enumerate(self.bsr_links[:1]):
+        for i, link in enumerate(self.bsr_links[1:]):
             self.parse_page(link)
             if i and i % RESTART_EVERY_LINKS == 0:
                 self.restart_driver()
@@ -523,6 +524,8 @@ if __name__ == "__main__":
         try:
             lumen._flush_records(force=True)
             lumen._flush_progress()
-        except Exception:
-            pass
+            json_to_csv.build_csv("temp_data.json","File.csv")
+            logger.info("File Saved")
+        except Exception as e:
+            logger.error("Error ", e)
         lumen.browser.quit("Chrome")
