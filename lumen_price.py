@@ -1,5 +1,5 @@
 import pandas as pd
-from curl_cffi import requests
+# from curl_cffi import requests
 import random, os, re
 import time, scrapy, json, gc
 from urllib.parse import quote, unquote
